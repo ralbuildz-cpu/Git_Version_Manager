@@ -1,3 +1,6 @@
+Known Issue:
+  When rolling back, version 1 is always your current commit. The script prevents rolling back to that same state, so if you want to go back to the previous working version, first make a small dummy change and save a new version. That pushes the older version to position 2, and then you can roll back to it normally. No data is lost, and you can later delete the dummy commit if needed.
+
 # Git_Version_Manager
 No Hassle Git Manager for DIY projects
 Version Manager
