@@ -1,3 +1,4 @@
+```python
 #!/usr/bin/env python3
 """
 Version Manager – with interactive ignore, safe rollback, and user-friendly menus.
@@ -6,19 +7,30 @@ No Git knowledge required.
 
 import os
 import sys
-import json
-import hashlib
 import subprocess
 import webbrowser
+import platform
 from pathlib import Path
 from datetime import datetime
 
 # ==================== CONFIG ====================
-# Use the current directory name as the project name
+VERSION = "1.1.0"
 PROJECT_NAME = Path.cwd().name
 HASH_FILE = ".file_hashes.json"
 IGNORE_DIRS = {".git", "__pycache__", "venv", ".venv", "env", ".env"}
 IGNORE_FILES = {HASH_FILE, ".gitignore", "version_manager.py"}
+
+# Operating system detection
+SYSTEM = platform.system()
+IS_WINDOWS = SYSTEM == "Windows"
+IS_LINUX = SYSTEM == "Linux"
+
+# Try to enable ANSI colors on Windows (no dependency if not available)
+try:
+    from colorama import just_fix_windows_console
+    just_fix_windows_console()
+except ImportError:
+    pass
 
 # Default .gitignore content (will be appended to)
 DEFAULT_GITIGNORE = """
@@ -35,16 +47,29 @@ env/
 # Version manager internal
 .file_hashes.json
 
+# Linux
+*~
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
 # Windows
 Thumbs.db
 desktop.ini
 """
 
 # ==================== DISPLAY HELPERS ====================
+def clear_screen():
+    """Clear the terminal screen in a cross-platform way, only if stdout is a tty."""
+    if sys.stdout.isatty():
+        os.system("cls" if IS_WINDOWS else "clear")
+
 def header():
-    os.system('cls' if os.name == 'nt' else 'clear')
+    clear_screen()
     print("\n  " + "=" * 44)
-    print(f"    {PROJECT_NAME}  --  Version Manager")
+    print(f"    {PROJECT_NAME}  --  Version Manager v{VERSION}")
     print("  " + "=" * 44 + "\n")
 
 def ok(msg):   print(f"  [OK] {msg}" + "\033[0m")
@@ -60,7 +85,7 @@ def git_installed():
     try:
         subprocess.run(["git", "--version"], capture_output=True, check=True)
         return True
-    except:
+    except (subprocess.CalledProcessError, FileNotFoundError):
         return False
 
 def ensure_git():
@@ -70,14 +95,32 @@ def ensure_git():
     err("Git is not installed on this computer.")
     print("\n  Git is a free tool that keeps saved copies of your project.")
     print("  Installing it takes about 2 minutes.\n")
-    print("  Download from:  https://git-scm.com/download/win")
-    print("\n  Steps:")
-    print("    1. Click the link above (or open it in your browser)")
-    print("    2. Download and run the installer, click Next through everything")
-    print("    3. Close this window and run this script again\n")
+
+    if IS_WINDOWS:
+        git_url = "https://git-scm.com/download/win"
+        install_text = (
+            "Download and run the installer.\n"
+            "Click Next through the default options."
+        )
+    elif IS_LINUX:
+        git_url = "https://git-scm.com/download/linux"
+        install_text = (
+            "Install Git using your package manager.\n\n"
+            "For Mint/Ubuntu:\n"
+            "sudo apt install git\n\n"
+            "For Fedora:\n"
+            "sudo dnf install git"
+        )
+    else:
+        git_url = "https://git-scm.com/downloads"
+        install_text = "Install Git using your operating system's package manager."
+
+    print(f"  Download from:  {git_url}")
+    print(f"\n  {install_text}\n")
+
     choice = input("  Open the download page now? (Y/N): ").strip().lower()
     if choice == 'y':
-        webbrowser.open("https://git-scm.com/download/win")
+        webbrowser.open(git_url)
     pause()
     return False
 
@@ -89,7 +132,6 @@ def ensure_git_config(repo_root):
             if key == "user.name":
                 val = f"{PROJECT_NAME} User"
             else:
-                # Use the project name (lowercase, no spaces) as part of the email
                 safe_name = PROJECT_NAME.lower().replace(" ", "_")
                 val = f"user@{safe_name}.local"
             run_git("config", "--local", key, val, repo_root=repo_root)
@@ -128,10 +170,9 @@ def init_repo(repo_root):
     if choice != 'y':
         return False
 
-    # Write .gitignore
     gitignore = repo_root / ".gitignore"
     if not gitignore.exists():
-        gitignore.write_text(DEFAULT_GITIGNORE)
+        gitignore.write_text(DEFAULT_GITIGNORE, encoding="utf-8")
         ok(".gitignore written – junk files will be excluded.")
 
     run_git("init", repo_root=repo_root)
@@ -167,7 +208,6 @@ def save_version():
         pause()
         return
 
-    # Get status with colors
     rc, status, _ = run_git("status", "--porcelain", repo_root=root, capture=True)
     if rc != 0 or not status.strip():
         info("No changes have been made since your last save.")
@@ -175,7 +215,6 @@ def save_version():
         pause()
         return
 
-    # Show changed files
     print("  Files changed since last save:\n")
     for line in status.splitlines():
         if len(line) < 3:
@@ -185,37 +224,31 @@ def save_version():
         color = ""
         label = ""
         if flag == "M":
-            color = "\033[93m"   # yellow
+            color = "\033[93m"
             label = "Modified"
         elif flag == "A":
-            color = "\033[92m"   # green
+            color = "\033[92m"
             label = "Added"
         elif flag == "D":
-            color = "\033[91m"   # red
+            color = "\033[91m"
             label = "Deleted"
         elif flag == "??":
-            color = "\033[96m"   # cyan
+            color = "\033[96m"
             label = "New file"
         else:
-            color = "\033[90m"   # gray
+            color = "\033[90m"
             label = "Changed"
         print(f"    {color}{label:9} : {file}\033[0m")
 
-    # ---- INTERACTIVE IGNORE for untracked files ----
     untracked = get_untracked_files(root)
     if untracked:
         print("\n  Some files are completely new (untracked).")
         print("  You can choose to include them or ignore them forever.\n")
         gitignore_path = root / ".gitignore"
-        # Load current gitignore patterns
-        if gitignore_path.exists():
-            ignore_patterns = gitignore_path.read_text().splitlines()
-        else:
-            ignore_patterns = []
 
         to_ignore = []
         to_include = []
-        skip_all = None  # 'y' or 'n'
+        skip_all = None
 
         for f in untracked:
             if skip_all == 'y':
@@ -245,16 +278,13 @@ def save_version():
                     print("  Please enter Y, N, A, or I.")
 
         if to_ignore:
-            # Add patterns to .gitignore (exact paths, safe)
-            with open(gitignore_path, "a") as f:
+            with open(gitignore_path, "a", encoding="utf-8") as f:
                 f.write("\n# User-ignored files\n")
                 for item in to_ignore:
                     f.write(f"{item}\n")
             ok(f"Ignored {len(to_ignore)} file(s) – added to .gitignore.")
-            # Stage .gitignore change
             run_git("add", ".gitignore", repo_root=root)
 
-    # Ask for commit message
     print("\n  Write a short note about what you changed.")
     print("  Examples:  'Fixed the bug'  /  'Added new feature'\n")
     msg = input("  Your note: ").strip()
@@ -263,7 +293,6 @@ def save_version():
         pause()
         return
 
-    # Stage everything (including changes and newly included files)
     run_git("add", "-A", repo_root=root)
     rc, out, err = run_git("commit", "-m", msg, repo_root=root, capture=True)
     if rc != 0:
@@ -331,7 +360,6 @@ def rollback():
         pause()
         return
 
-    # Show history inline
     print("  VERSION HISTORY  (newest first)")
     print("  ---------------------------------------------\n")
     for i, c in enumerate(commits, start=1):
@@ -371,14 +399,12 @@ def rollback():
         return
 
     root = repo_root()
-    # 1. Backup current state
     run_git("add", "-A", repo_root=root)
     rc, out, _ = run_git("status", "--porcelain", repo_root=root, capture=True)
     if out.strip():
         run_git("commit", "-m", f"Auto-backup before rollback to: {target['subject']}", repo_root=root)
         ok("Current files backed up as a new save point.")
 
-    # 2. Restore old version's files, then commit as a new point
     run_git("checkout", target["hash"], "--", ".", repo_root=root)
     run_git("add", "-A", repo_root=root)
     run_git("commit", "-m", f"Rolled back to version {num}: {target['subject']}", repo_root=root)
@@ -388,7 +414,7 @@ def rollback():
     info("The rollback is saved as a new version – you can undo it the same way.")
     pause()
 
-# ==================== UPDATE IGNORE LIST (NEW INTERACTIVE VERSION) ====================
+# ==================== UPDATE IGNORE LIST ====================
 def edit_ignore():
     header()
     print("  MANAGE IGNORE LIST")
@@ -402,15 +428,14 @@ def edit_ignore():
 
     gitignore = root / ".gitignore"
     if not gitignore.exists():
-        gitignore.write_text(DEFAULT_GITIGNORE)
+        gitignore.write_text(DEFAULT_GITIGNORE, encoding="utf-8")
         ok("Created new .gitignore file.")
         run_git("add", ".gitignore", repo_root=root)
         run_git("commit", "-m", "Initial .gitignore", repo_root=root)
 
     while True:
-        # Show current ignored patterns
         print("\n  Current ignored patterns (from .gitignore):")
-        lines = gitignore.read_text().splitlines()
+        lines = gitignore.read_text(encoding="utf-8").splitlines()
         shown = 0
         for line in lines:
             stripped = line.strip()
@@ -426,12 +451,9 @@ def edit_ignore():
         print("  3. Back to main menu")
         choice = input("  Enter a number: ").strip()
 
-        # ---------- ADD ----------
         if choice == "1":
-            # Scan for files that are NOT currently ignored
             candidates = []
             for dirpath, dirnames, filenames in os.walk(root):
-                # Skip .git folder entirely
                 rel_dir = Path(dirpath).relative_to(root)
                 if rel_dir == Path("."):
                     rel_dir = Path("")
@@ -440,12 +462,10 @@ def edit_ignore():
 
                 for f in filenames:
                     rel_path = rel_dir / f
-                    # Skip the script itself and .gitignore to avoid confusion
                     if rel_path.name in ["version_manager.py", ".gitignore"]:
                         continue
-                    # Check if already ignored by git
                     rc, _, _ = run_git("check-ignore", "-q", str(rel_path), repo_root=root, capture=True)
-                    if rc != 0:  # not ignored -> candidate
+                    if rc != 0:
                         candidates.append(str(rel_path))
 
             if not candidates:
@@ -478,7 +498,6 @@ def edit_ignore():
             if not to_add:
                 continue
 
-            # Append to .gitignore
             with open(gitignore, "a", encoding="utf-8") as f:
                 f.write("\n# User-added ignores\n")
                 for item in to_add:
@@ -489,10 +508,9 @@ def edit_ignore():
             run_git("commit", "-m", "Updated ignore list (added files)", repo_root=root)
             ok("Changes committed.")
 
-        # ---------- REMOVE ----------
         elif choice == "2":
-            lines = gitignore.read_text().splitlines()
-            selectable = []  # store line indices that are not comments/empty
+            lines = gitignore.read_text(encoding="utf-8").splitlines()
+            selectable = []
             print("\n  Select a pattern to remove (enter the number, or 'a' for all, 'q' to cancel):")
             display_idx = 1
             for i, line in enumerate(lines):
@@ -528,7 +546,6 @@ def edit_ignore():
             if not to_remove:
                 continue
 
-            # Remove lines (process in reverse to keep indices valid)
             new_lines = lines.copy()
             for idx in sorted(to_remove, reverse=True):
                 del new_lines[idx]
@@ -555,7 +572,6 @@ def main():
         if not init_repo(root):
             sys.exit(1)
 
-    # Make sure we have local git config
     ensure_git_config(root)
 
     while True:
@@ -589,3 +605,4 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print("\n\n  👋 Exited by user.")
         sys.exit(0)
+```
